@@ -1,1 +1,508 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#0b0805" />
+<title>دستیار شخصی</title>
+<link rel="manifest" href="manifest.json" />
+<style>
+  @import url('https://cdn.jsdelivr.net/gh/rastikerdar/vazirmatn@v33.003/Vazirmatn-font-face.css');
+  * { box-sizing: border-box; }
+  body { margin:0; background:#070503; font-family:'Vazirmatn','Tahoma',Arial,sans-serif; }
+  input[type="time"]::-webkit-calendar-picker-indicator, input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(0.7) sepia(1) saturate(3) hue-rotate(10deg); }
+</style>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback } = React;
 
+/* ---------- palette ---------- */
+const C = {
+  panel: "linear-gradient(160deg, rgba(38,28,15,0.92), rgba(12,9,6,0.96))",
+  gold: "#d4af37", goldLight: "#f3d98b", goldDim: "#8a6d2f",
+  cream: "#f3e6c4", creamDim: "#bfae83",
+  border: "rgba(212,175,55,0.35)", borderSoft: "rgba(212,175,55,0.18)",
+};
+const FONT = "'Vazirmatn','Tahoma',Arial,sans-serif";
+
+/* ---------- persian helpers ---------- */
+const faDigits = (s) => String(s).replace(/[0-9]/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[d]);
+const WEEKDAYS = ["یکشنبه","دوشنبه","سه‌شنبه","چهارشنبه","پنجشنبه","جمعه","شنبه"];
+const JMONTHS = ["فروردین","اردیبهشت","خرداد","تیر","مرداد","شهریور","مهر","آبان","آذر","دی","بهمن","اسفند"];
+
+function toJalali(gy, gm, gd) {
+  const g_d_m = [0,31,59,90,120,151,181,212,243,273,304,334];
+  let jy = gy<=1600?0:979; gy -= gy<=1600?621:1600;
+  const gy2 = gm>2?gy+1:gy;
+  let days = 365*gy + Math.floor((gy2+3)/4) - Math.floor((gy2+99)/100) + Math.floor((gy2+399)/400) - 80 + gd + g_d_m[gm-1];
+  jy += 33*Math.floor(days/12053); days %= 12053;
+  jy += 4*Math.floor(days/1461); days %= 1461;
+  if (days > 365) { jy += Math.floor((days-1)/365); days = (days-1)%365; }
+  const jm = days<186 ? 1+Math.floor(days/31) : 7+Math.floor((days-186)/30);
+  const jd = 1 + (days<186 ? days%31 : (days-186)%30);
+  return [jy, jm, jd];
+}
+function jalaliDateString(d) {
+  const [jy, jm, jd] = toJalali(d.getFullYear(), d.getMonth()+1, d.getDate());
+  return `${WEEKDAYS[d.getDay()]} ${faDigits(jd)} ${JMONTHS[jm-1]}`;
+}
+function ymd(d) { return `\( {d.getFullYear()}- \){String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; }
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+
+/* ---------- local storage ---------- */
+function loadKey(key, fallback) {
+  try { const raw = localStorage.getItem("assistant:"+key); return raw===null? fallback : JSON.parse(raw); }
+  catch { return fallback; }
+}
+function saveKey(key, value) {
+  try { localStorage.setItem("assistant:"+key, JSON.stringify(value)); } catch(e){ console.error(e); }
+}
+
+/* ---------- claude api (uses the user's own key, stored only on this device) ---------- */
+async function askClaude(apiKey, systemPrompt, userText) {
+  if (!apiKey) throw new Error("no-key");
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+    },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6", max_tokens: 1000,
+      system: systemPrompt, messages: [{ role: "user", content: userText }],
+    }),
+  });
+  const data = await res.json();
+  const text = (data.content||[]).filter(b=>b.type==="text").map(b=>b.text).join("\n");
+  return text || "پاسخی دریافت نشد.";
+}
+
+/* ---------- shared UI ---------- */
+function Panel({ children, style }) {
+  return <div style={{ background:C.panel, border:`1px solid ${C.border}`, borderRadius:20, padding:16, boxShadow:"0 8px 30px rgba(0,0,0,0.5)", ...style }}>{children}</div>;
+}
+function BackHeader({ title, onBack }) {
+  return (
+    <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:18 }}>
+      <button onClick={onBack} style={{ display:"flex", alignItems:"center", gap:6, background:"rgba(212,175,55,0.12)", border:`1px solid ${C.border}`, color:C.goldLight, borderRadius:999, padding:"8px 14px", fontFamily:FONT, cursor:"pointer" }}>‹ بازگشت</button>
+      <h2 style={{ color:C.gold, fontSize:20, fontWeight:700, margin:0 }}>{title}</h2>
+    </div>
+  );
+}
+function GoldButton({ children, onClick, style, disabled }) {
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      background: disabled? "rgba(212,175,55,0.15)" : "linear-gradient(135deg,#e6c65c,#a9822c)",
+      color: disabled? C.creamDim : "#1a1206", border:"none", borderRadius:14, padding:"10px 16px",
+      fontFamily:FONT, fontWeight:700, cursor: disabled?"not-allowed":"pointer",
+      display:"flex", alignItems:"center", gap:8, justifyContent:"center", ...style,
+    }}>{children}</button>
+  );
+}
+function TextField(props) {
+  return <input {...props} style={{ width:"100%", background:"rgba(0,0,0,0.35)", border:`1px solid ${C.borderSoft}`, borderRadius:12, padding:"10px 12px", color:C.cream, fontFamily:FONT, outline:"none", boxSizing:"border-box", ...props.style }} />;
+}
+
+/* ---------- Onboarding ---------- */
+function OnboardingScreen({ onDone }) {
+  const [name, setName] = useState("");
+  const [avatar, setAvatar] = useState(null);
+  const fileRef = useRef(null);
+  const onUpload = (e) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setAvatar(reader.result);
+    reader.readAsDataURL(file);
+  };
+  return (
+    <div style={{ display:"flex", flexDirection:"column", justifyContent:"center", minHeight:"80vh" }}>
+      <Panel style={{ textAlign:"center" }}>
+        <div style={{ fontSize:30, marginBottom:10 }}>✨</div>
+        <h2 style={{ color:C.gold, margin:"0 0 6px" }}>خوش آمدی!</h2>
+        <p style={{ color:C.creamDim, fontSize:13, marginBottom:18 }}>قبل از شروع بگو چی صدات کنم و اگه دوست داری عکس خودت رو بذار.</p>
+        <div onClick={()=>fileRef.current?.click()} style={{ width:110, height:130, borderRadius:"40% 40% 16% 16%", border:`2px solid ${C.gold}`, margin:"0 auto 16px", cursor:"pointer", overflow:"hidden", background:"rgba(212,175,55,0.1)", display:"flex", alignItems:"center", justifyContent:"center" }}>
+          {avatar ? <img src={avatar} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : <span style={{fontSize:32}}>👤</span>}
+        </div>
+        <input ref={fileRef} type="file" accept="image/*" onChange={onUpload} style={{ display:"none" }} />
+        <TextField placeholder="اسمت چیه؟" value={name} onChange={e=>setName(e.target.value)} style={{ marginBottom:14, textAlign:"center" }} />
+        <GoldButton onClick={()=>onDone({ name: name.trim()||"دوست من", avatar })} style={{ width:"100%" }} disabled={!name.trim()}>شروع کن</GoldButton>
+      </Panel>
+    </div>
+  );
+}
+
+/* ---------- Alarms ---------- */
+function AlarmsScreen({ alarms, setAlarms, onBack }) {
+  const [label, setLabel] = useState(""); const [time, setTime] = useState("08:00");
+  const add = () => { if(!label.trim()) return; setAlarms([...alarms, { id:uid(), label:label.trim(), time, active:true }]); setLabel(""); };
+  const toggle = (id) => setAlarms(alarms.map(a=>a.id===id?{...a,active:!a.active}:a));
+  const del = (id) => setAlarms(alarms.filter(a=>a.id!==id));
+  return (
+    <div>
+      <BackHeader title="ساعت و زنگ" onBack={onBack} />
+      <Panel style={{ marginBottom:14 }}>
+        <TextField placeholder="عنوان یادآور" value={label} onChange={e=>setLabel(e.target.value)} style={{ marginBottom:8 }} />
+        <div style={{ display:"flex", gap:8 }}>
+          <TextField type="time" value={time} onChange={e=>setTime(e.target.value)} style={{ flex:"0 0 130px" }} />
+          <GoldButton onClick={add} style={{ flex:1 }}>+ افزودن زنگ</GoldButton>
+        </div>
+      </Panel>
+      {alarms.length===0 && <p style={{ color:C.creamDim, textAlign:"center" }}>هنوز زنگی تنظیم نکرده‌ای.</p>}
+      {alarms.map(a=>(
+        <Panel key={a.id} style={{ marginBottom:10, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+          <div><div style={{ color:C.gold, fontWeight:700, fontSize:18 }}>{faDigits(a.time)}</div><div style={{ color:C.creamDim, fontSize:13 }}>{a.label}</div></div>
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={()=>toggle(a.id)} style={{ background: a.active?"rgba(212,175,55,0.25)":"rgba(255,255,255,0.05)", border:`1px solid ${C.border}`, borderRadius:10, padding:8, color:C.gold, cursor:"pointer" }}>✓</button>
+            <button onClick={()=>del(a.id)} style={{ background:"rgba(255,80,80,0.1)", border:"1px solid rgba(255,80,80,0.3)", borderRadius:10, padding:8, color:"#ff8080", cursor:"pointer" }}>🗑</button>
+          </div>
+        </Panel>
+      ))}
+    </div>
+  );
+}
+
+/* ---------- Meds ---------- */
+function MedsScreen({ meds, setMeds, onBack }) {
+  const [name, setName] = useState(""); const [dose, setDose] = useState(""); const [time, setTime] = useState("08:00");
+  const today = ymd(new Date());
+  const add = () => { if(!name.trim()) return; setMeds([...meds, { id:uid(), name:name.trim(), dose, time, takenDates:[] }]); setName(""); setDose(""); };
+  const markTaken = (id) => setMeds(meds.map(m=> m.id===id && !m.takenDates.includes(today) ? {...m, takenDates:[...m.takenDates, today]} : m));
+  const del = (id) => setMeds(meds.filter(m=>m.id!==id));
+  return (
+    <div>
+      <BackHeader title="داروها" onBack={onBack} />
+      <Panel style={{ marginBottom:14 }}>
+        <div style={{ display:"flex", gap:8, marginBottom:8 }}>
+          <TextField placeholder="نام دارو" value={name} onChange={e=>setName(e.target.value)} />
+          <TextField placeholder="دوز" value={dose} onChange={e=>setDose(e.target.value)} style={{ flex:"0 0 110px" }} />
+        </div>
+        <div style={{ display:"flex", gap:8 }}>
+          <TextField type="time" value={time} onChange={e=>setTime(e.target.value)} style={{ flex:"0 0 130px" }} />
+          <GoldButton onClick={add} style={{ flex:1 }}>+ افزودن دارو</GoldButton>
+        </div>
+      </Panel>
+      {meds.length===0 && <p style={{ color:C.creamDim, textAlign:"center" }}>هنوز دارویی ثبت نشده.</p>}
+      {meds.map(m=>{ const taken = m.takenDates.includes(today); return (
+        <Panel key={m.id} style={{ marginBottom:10, display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+          <div><div style={{ color:C.gold, fontWeight:700 }}>{m.name} <span style={{ color:C.creamDim, fontWeight:400, fontSize:13 }}>{m.dose}</span></div><div style={{ color:C.creamDim, fontSize:13 }}>ساعت {faDigits(m.time)}</div></div>
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={()=>markTaken(m.id)} style={{ background: taken?"rgba(120,200,120,0.2)":"rgba(212,175,55,0.15)", border:`1px solid ${taken?"rgba(120,200,120,0.4)":C.border}`, borderRadius:10, padding:"8px 10px", color: taken?"#9ee89e":C.gold, cursor:"pointer", fontFamily:FONT, fontSize:12 }}>{taken?"مصرف شد ✓":"ثبت مصرف"}</button>
+            <button onClick={()=>del(m.id)} style={{ background:"rgba(255,80,80,0.1)", border:"1px solid rgba(255,80,80,0.3)", borderRadius:10, padding:8, color:"#ff8080", cursor:"pointer" }}>🗑</button>
+          </div>
+        </Panel>
+      );})}
+    </div>
+  );
+}
+
+/* ---------- Notes ---------- */
+function NotesScreen({ notes, setNotes, onBack }) {
+  const [title, setTitle] = useState(""); const [text, setText] = useState("");
+  const add = () => { if(!title.trim() && !text.trim()) return; setNotes([{ id:uid(), title:title.trim()||"بدون عنوان", text:text.trim(), createdAt: ymd(new Date()) }, ...notes]); setTitle(""); setText(""); };
+  const del = (id) => setNotes(notes.filter(n=>n.id!==id));
+  return (
+    <div>
+      <BackHeader title="یادداشت‌ها" onBack={onBack} />
+      <Panel style={{ marginBottom:14 }}>
+        <TextField placeholder="عنوان" value={title} onChange={e=>setTitle(e.target.value)} style={{ marginBottom:8 }} />
+        <textarea placeholder="متن یادداشت..." value={text} onChange={e=>setText(e.target.value)} rows={3} style={{ width:"100%", background:"rgba(0,0,0,0.35)", border:`1px solid ${C.borderSoft}`, borderRadius:12, padding:10, color:C.cream, fontFamily:FONT, outline:"none", resize:"vertical", boxSizing:"border-box", marginBottom:8 }} />
+        <GoldButton onClick={add}>+ ذخیره یادداشت</GoldButton>
+      </Panel>
+      {notes.length===0 && <p style={{ color:C.creamDim, textAlign:"center" }}>هنوز یادداشتی ننوشته‌ای.</p>}
+      {notes.map(n=>(
+        <Panel key={n.id} style={{ marginBottom:10 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
+            <div><div style={{ color:C.gold, fontWeight:700 }}>{n.title}</div><div style={{ color:C.creamDim, fontSize:13, marginTop:4 }}>{n.text}</div><div style={{ color:C.goldDim, fontSize:11, marginTop:6 }}>{n.createdAt}</div></div>
+            <button onClick={()=>del(n.id)} style={{ background:"rgba(255,80,80,0.1)", border:"1px solid rgba(255,80,80,0.3)", borderRadius:10, padding:8, color:"#ff8080", cursor:"pointer", flexShrink:0 }}>🗑</button>
+          </div>
+        </Panel>
+      ))}
+    </div>
+  );
+}
+
+/* ---------- Calendar ---------- */
+function CalendarScreen({ events, setEvents, onBack }) {
+  const [title, setTitle] = useState(""); const [date, setDate] = useState(ymd(new Date())); const [time, setTime] = useState("10:00");
+  const add = () => { if(!title.trim()) return; setEvents([...events, { id:uid(), title:title.trim(), date, time }].sort((a,b)=>(a.date+a.time).localeCompare(b.date+b.time))); setTitle(""); };
+  const del = (id) => setEvents(events.filter(e=>e.id!==id));
+  return (
+    <div>
+      <BackHeader title="تقویم" onBack={onBack} />
+      <Panel style={{ marginBottom:14 }}>
+        <TextField placeholder="عنوان رویداد" value={title} onChange={e=>setTitle(e.target.value)} style={{ marginBottom:8 }} />
+        <div style={{ display:"flex", gap:8 }}>
+          <TextField type="date" value={date} onChange={e=>setDate(e.target.value)} />
+          <TextField type="time" value={time} onChange={e=>setTime(e.target.value)} style={{ flex:"0 0 120px" }} />
+        </div>
+        <GoldButton onClick={add} style={{ marginTop:8, width:"100%" }}>+ افزودن به تقویم</GoldButton>
+      </Panel>
+      {events.length===0 && <p style={{ color:C.creamDim, textAlign:"center" }}>رویدادی ثبت نشده.</p>}
+      {events.map(e=>(
+        <Panel key={e.id} style={{ marginBottom:10, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+          <div><div style={{ color:C.gold, fontWeight:700 }}>{e.title}</div><div style={{ color:C.creamDim, fontSize:13 }}>{e.date} — ساعت {faDigits(e.time)}</div></div>
+          <button onClick={()=>del(e.id)} style={{ background:"rgba(255,80,80,0.1)", border:"1px solid rgba(255,80,80,0.3)", borderRadius:10, padding:8, color:"#ff8080", cursor:"pointer" }}>🗑</button>
+        </Panel>
+      ))}
+    </div>
+  );
+}
+
+/* ---------- Reports ---------- */
+function ReportsScreen({ alarms, meds, notes, events, onBack }) {
+  const today = ymd(new Date());
+  const takenToday = meds.filter(m=>m.takenDates.includes(today)).length;
+  return (
+    <div>
+      <BackHeader title="گزارش‌ها" onBack={onBack} />
+      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
+        {[["زنگ‌های فعال", alarms.filter(a=>a.active).length],["داروهای امروز مصرف‌شده", `${takenToday} از ${meds.length}`],["یادداشت‌های ثبت‌شده", notes.length],["رویدادهای آینده", events.filter(e=>e.date>=today).length]].map(([label,val])=>(
+          <Panel key={label}><div style={{ color:C.creamDim, fontSize:12 }}>{label}</div><div style={{ color:C.gold, fontSize:24, fontWeight:800, marginTop:4 }}>{faDigits(val)}</div></Panel>
+        ))}
+      </div>
+      <Panel><div style={{ color:C.creamDim, fontSize:13, lineHeight:2 }}>این خلاصه‌ای زنده از فعالیت‌های توی برنامه‌ست.</div></Panel>
+    </div>
+  );
+}
+
+/* ---------- Settings ---------- */
+function SettingsScreen({ profile, setProfile, apiKey, setApiKey, onBack }) {
+  const fileRef = useRef(null);
+  const onUpload = (e) => { const file = e.target.files?.[0]; if(!file) return; const reader = new FileReader(); reader.onload = ()=>setProfile({...profile, avatar: reader.result}); reader.readAsDataURL(file); };
+  return (
+    <div>
+      <BackHeader title="تنظیمات" onBack={onBack} />
+      <Panel style={{ marginBottom:14, textAlign:"center" }}>
+        <div onClick={()=>fileRef.current?.click()} style={{ width:96, height:96, borderRadius:"50%", margin:"0 auto 10px", border:`2px solid ${C.gold}`, overflow:"hidden", cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", background:"rgba(212,175,55,0.1)" }}>
+          {profile.avatar ? <img src={profile.avatar} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : <span style={{fontSize:28}}>👤</span>}
+        </div>
+        <input ref={fileRef} type="file" accept="image/*" onChange={onUpload} style={{ display:"none" }} />
+        <div style={{ color:C.creamDim, fontSize:12, marginBottom:12 }}>برای تغییر عکس، روی قاب بزن</div>
+        <TextField placeholder="نام شما" value={profile.name} onChange={e=>setProfile({...profile, name:e.target.value})} />
+      </Panel>
+      <Panel>
+        <div style={{ color:C.goldLight, fontWeight:700, marginBottom:8 }}>کلید هوش مصنوعی (اختیاری)</div>
+        <p style={{ color:C.creamDim, fontSize:12, lineHeight:1.9, marginTop:0 }}>برای فعال کردن «گفتگو با من» و «پیشنهاد برای شما»، کلید API خودت رو از console.anthropic.com بگیر و اینجا بذار. این کلید فقط روی همین گوشی ذخیره می‌شه.</p>
+        <TextField placeholder="sk-ant-..." value={apiKey} onChange={e=>setApiKey(e.target.value)} type="password" />
+      </Panel>
+    </div>
+  );
+}
+
+/* ---------- Chat ---------- */
+function ChatScreen({ onBack, contextText, apiKey }) {
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [loading, setLoading] = useState(false);
+  const bottomRef = useRef(null);
+  const system = `تو دستیار شخصی هستی. همیشه فقط فارسی، گرم، مختصر و کاربردی جواب بده. زمینه کاربر: ${contextText}`;
+  const send = useCallback(async (text) => {
+    const t = (text ?? input).trim(); if (!t || loading) return;
+    setMessages(m=>[...m,{role:"user", text:t}]); setInput(""); setLoading(true);
+    try {
+      const reply = await askClaude(apiKey, system, t);
+      setMessages(m=>[...m,{role:"assistant", text:reply}]);
+    } catch {
+      setMessages(m=>[...m,{role:"assistant", text: apiKey ? "مشکلی در اتصال پیش اومد." : "برای فعال شدن گفتگو، اول توی تنظیمات کلید API رو وارد کن."}]);
+    } finally { setLoading(false); }
+  }, [input, loading, system, apiKey]);
+  useEffect(()=>{ bottomRef.current?.scrollIntoView({behavior:"smooth"}); }, [messages, loading]);
+  return (
+    <div>
+      <BackHeader title="گفتگو با من" onBack={onBack} />
+      <div style={{ marginBottom:10, maxHeight:420, overflowY:"auto" }}>
+        {messages.map((m,i)=>(
+          <div key={i} style={{ display:"flex", justifyContent: m.role==="user"?"flex-start":"flex-end", marginBottom:8 }}>
+            <div style={{ maxWidth:"85%", padding:"10px 14px", borderRadius:16, background: m.role==="user"?"rgba(212,175,55,0.12)":"linear-gradient(135deg, rgba(60,45,20,0.9), rgba(20,15,8,0.9))", border:`1px solid ${m.role==="user"?C.borderSoft:C.border}`, color:C.cream, fontSize:14, lineHeight:1.8, whiteSpace:"pre-wrap" }}>{m.text}</div>
+          </div>
+        ))}
+        {loading && <div style={{ color:C.creamDim, fontSize:13 }}>در حال نوشتن پاسخ...</div>}
+        <div ref={bottomRef} />
+      </div>
+      <div style={{ display:"flex", gap:8 }}>
+        <TextField placeholder="پیامت رو بنویس..." value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&send()} />
+        <GoldButton onClick={()=>send()} disabled={loading} style={{ flex:"0 0 auto", padding:"10px 14px" }}>➤</GoldButton>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Voice modal ---------- */
+const ROUTE_KEYWORDS = [[["زنگ","ساعت","آلارم"],"alarms"],[["دارو"],"meds"],[["یادداشت","نوت"],"notes"],[["تقویم","رویداد","برنامه"],"calendar"],[["گزارش","آمار"],"reports"],[["تنظیم"],"settings"],[["گفتگو","چت","صحبت"],"chat"]];
+function matchRoute(text) { const t=text.toLowerCase(); for (const [words,route] of ROUTE_KEYWORDS) if (words.some(w=>t.includes(w))) return route; return null; }
+function VoiceModal({ onClose, onRoute }) {
+  const [listening, setListening] = useState(false);
+  const [text, setText] = useState("");
+  const [supported, setSupported] = useState(true);
+  const recRef = useRef(null);
+  useEffect(() => {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { setSupported(false); return; }
+    const rec = new SR(); rec.lang="fa-IR"; rec.interimResults=false;
+    rec.onresult = (e) => { const said=e.results[0][0].transcript; setText(said); const route=matchRoute(said); if(route) setTimeout(()=>onRoute(route),400); };
+    rec.onend = () => setListening(false); rec.onerror = () => setListening(false);
+    recRef.current = rec;
+  }, [onRoute]);
+  const startListening = () => { if(!recRef.current) return; setText(""); setListening(true); try{ recRef.current.start(); }catch{} };
+  const runTyped = () => { const route = matchRoute(text); if (route) onRoute(route); };
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:50, padding:20 }}>
+      <Panel style={{ width:"100%", maxWidth:380 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+          <button onClick={onClose} style={{ background:"none", border:"none", color:C.creamDim, cursor:"pointer", fontSize:18 }}>✕</button>
+          <h3 style={{ color:C.gold, margin:0 }}>فرمان صوتی</h3>
+        </div>
+        <p style={{ color:C.creamDim, fontSize:13, textAlign:"center", marginBottom:14 }}>بگو یا بنویس کدام بخش را باز کنم: داروها، یادداشت، تقویم، ساعت و زنگ، گزارش‌ها، تنظیمات یا گفتگو</p>
+        {supported && (
+          <div style={{ textAlign:"center", marginBottom:14 }}>
+            <button onClick={startListening} style={{ width:72, height:72, borderRadius:"50%", border:`2px solid ${C.gold}`, background: listening?"rgba(212,175,55,0.35)":"rgba(212,175,55,0.12)", color:C.gold, cursor:"pointer", fontSize:28 }}>🎙</button>
+            <div style={{ color:C.creamDim, fontSize:12, marginTop:8 }}>{listening?"در حال گوش دادن...":"برای صحبت لمس کن"}</div>
+          </div>
+        )}
+        {!supported && <p style={{ color:"#e0a05a", fontSize:12, textAlign:"center", marginBottom:10 }}>مرورگر فعلی از تشخیص گفتار پشتیبانی نمی‌کند؛ دستور را تایپ کن.</p>}
+        <div style={{ display:"flex", gap:8 }}>
+          <TextField placeholder="مثلاً: یادداشت رو باز کن" value={text} onChange={e=>setText(e.target.value)} onKeyDown={e=>e.key==="Enter"&&runTyped()} />
+          <GoldButton onClick={runTyped} style={{ flex:"0 0 auto" }}>برو</GoldButton>
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+/* ---------- Suggestion modal ---------- */
+function SuggestionModal({ text, loading, onClose }) {
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:50, padding:20 }}>
+      <Panel style={{ width:"100%", maxWidth:380 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+          <button onClick={onClose} style={{ background:"none", border:"none", color:C.creamDim, cursor:"pointer", fontSize:18 }}>✕</button>
+          <h3 style={{ color:C.gold, margin:0 }}>💡 پیشنهاد برای شما</h3>
+        </div>
+        <div style={{ color:C.cream, fontSize:14, lineHeight:2, minHeight:60 }}>{loading? "در حال فکر کردن...": text}</div>
+      </Panel>
+    </div>
+  );
+}
+
+/* ---------- Home ---------- */
+const WAITING_PHRASES = ["من منتظر دستور شما هستم؛ کدام آیکون را باز کنم؟","آماده‌ام. یادداشت، تقویم، داروها یا جای دیگری؟","چه کمکی از دستم برمی‌آید؟ فقط بگو کدام بخش را باز کنم."];
+function Home({ profile, now, alarms, meds, notes, events, visitCount, go, openVoice, openSuggestion }) {
+  const today = ymd(now); const tomorrow = ymd(new Date(now.getTime()+86400000));
+  const nextMed = meds.filter(m=>!m.takenDates.includes(today)).sort((a,b)=>a.time.localeCompare(b.time))[0];
+  const notesToday = notes.filter(n=>n.createdAt===today).length;
+  const eventsTomorrow = events.filter(e=>e.date===tomorrow).length;
+  const greeting = visitCount===0 ? "به برنامه شخصی شما خوش آمدم! از من چه کاری برمی‌آید؟" : WAITING_PHRASES[visitCount % WAITING_PHRASES.length];
+  const hh = String(now.getHours()).padStart(2,"0"); const mm = String(now.getMinutes()).padStart(2,"0");
+  const tiles = [["🔔","ساعت و زنگ","alarms"],["💊","داروها","meds"],["📝","یادداشت","notes"],["📅","تقویم","calendar"],["📊","گزارش‌ها","reports"],["⚙️","تنظیمات","settings"]];
+  return (
+    <div>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:14 }}>
+        <h1 style={{ color:C.gold, fontSize:20, margin:0 }}>سلام {profile.name||"دوست من"} 👋</h1>
+        <Panel style={{ padding:"8px 14px", textAlign:"center" }}>
+          <div style={{ color:C.cream, fontWeight:700 }}>{faDigits(`\( {hh}: \){mm}`)}</div>
+          <div style={{ color:C.creamDim, fontSize:11 }}>{jalaliDateString(now)}</div>
+        </Panel>
+      </div>
+      <Panel style={{ marginBottom:16 }}><p style={{ color:C.cream, margin:0, lineHeight:2 }}>{greeting}</p></Panel>
+      <div style={{ display:"flex", justifyContent:"center", marginBottom:16 }}>
+        <div onClick={()=>go("settings")} style={{ width:150, height:190, borderRadius:"44% 44% 20% 20%", border:`3px solid ${C.gold}`, overflow:"hidden", cursor:"pointer", background:"rgba(212,175,55,0.08)", display:"flex", alignItems:"center", justifyContent:"center", boxShadow:"0 0 30px rgba(212,175,55,0.25)" }}>
+          {profile.avatar ? <img src={profile.avatar} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }}/> : <span style={{fontSize:48}}>👤</span>}
+        </div>
+      </div>
+      <Panel style={{ marginBottom:16 }}>
+        <div style={{ color:C.goldLight, fontWeight:700, marginBottom:10 }}>پیام‌های من</div>
+        {[["💊","داروی بعدی", nextMed ? `${nextMed.name} — ساعت \( {faDigits(nextMed.time)}` : "چیزی برای امروز نیست", "meds"],["📝","یادداشت امروز", ` \){faDigits(notesToday)} مورد`, "notes"],["📅","برنامه فردا", `${faDigits(eventsTomorrow)} رویداد`, "calendar"]].map((row,i)=>(
+          <div key={i} onClick={()=>go(row[3])} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 4px", cursor:"pointer" }}>
+            <div style={{ background:"rgba(212,175,55,0.15)", borderRadius:10, padding:8, fontSize:18 }}>{row[0]}</div>
+            <div><div style={{ color:C.cream, fontSize:14 }}>{row[1]}</div><div style={{ color:C.creamDim, fontSize:12 }}>{row[2]}</div></div>
+          </div>
+        ))}
+        <button onClick={()=>go("reports")} style={{ width:"100%", marginTop:8, background:"rgba(212,175,55,0.1)", border:`1px solid ${C.borderSoft}`, color:C.goldLight, borderRadius:12, padding:8, fontFamily:FONT, cursor:"pointer" }}>مشاهده همه</button>
+      </Panel>
+      <div style={{ display:"flex", gap:10, marginBottom:18 }}>
+        <GoldButton onClick={()=>go("chat")} style={{ flex:1 }}>💬 گفتگو با من</GoldButton>
+        <GoldButton onClick={openSuggestion} style={{ flex:1 }}>💡 پیشنهاد برای شما</GoldButton>
+      </div>
+      <div style={{ display:"flex", justifyContent:"center", marginBottom:18 }}>
+        <button onClick={openVoice} style={{ width:74, height:74, borderRadius:"50%", border:`2px solid ${C.gold}`, background:"radial-gradient(circle, rgba(212,175,55,0.3), rgba(212,175,55,0.05))", color:C.gold, cursor:"pointer", boxShadow:"0 0 25px rgba(212,175,55,0.35)", fontSize:28 }}>🎙</button>
+      </div>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:10 }}>
+        {tiles.map(t=>(
+          <button key={t[2]} onClick={()=>go(t[2])} style={{ background:"rgba(255,255,255,0.03)", border:`1px solid ${C.borderSoft}`, borderRadius:16, padding:"14px 6px", display:"flex", flexDirection:"column", alignItems:"center", gap:6, cursor:"pointer" }}>
+            <span style={{ fontSize:22 }}>{t[0]}</span><span style={{ color:C.cream, fontSize:12 }}>{t[1]}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- App root ---------- */
+function App() {
+  const [view, setView] = useState("home");
+  const [visitCount, setVisitCount] = useState(0);
+  const [now, setNow] = useState(new Date());
+  const [profile, setProfile] = useState(()=>loadKey("profile", { name:"", avatar:null }));
+  const [onboarded, setOnboarded] = useState(()=>loadKey("onboarded", false));
+  const [alarms, setAlarms] = useState(()=>loadKey("alarms", []));
+  const [meds, setMeds] = useState(()=>loadKey("medications", []));
+  const [notes, setNotes] = useState(()=>loadKey("notes", []));
+  const [events, setEvents] = useState(()=>loadKey("events", []));
+  const [apiKey, setApiKey] = useState(()=>loadKey("apiKey", ""));
+  const [showVoice, setShowVoice] = useState(false);
+  const [suggestion, setSuggestion] = useState(null);
+  const [suggestionLoading, setSuggestionLoading] = useState(false);
+
+  useEffect(()=>{ const t=setInterval(()=>setNow(new Date()), 30000); return ()=>clearInterval(t); }, []);
+  useEffect(()=>saveKey("profile", profile), [profile]);
+  useEffect(()=>saveKey("alarms", alarms), [alarms]);
+  useEffect(()=>saveKey("medications", meds), [meds]);
+  useEffect(()=>saveKey("notes", notes), [notes]);
+  useEffect(()=>saveKey("events", events), [events]);
+  useEffect(()=>saveKey("apiKey", apiKey), [apiKey]);
+
+  const go = (route) => { setView(route); setShowVoice(false); };
+  const goHome = () => { setVisitCount(c=>c+1); setView("home"); };
+  const contextText = `نام کاربر: ${profile.name}. تعداد داروها: ${meds.length}. تعداد یادداشت‌ها: ${notes.length}. تعداد رویدادهای تقویم: ${events.length}. تعداد زنگ‌های فعال: ${alarms.filter(a=>a.active).length}.`;
+  const openSuggestion = async () => {
+    setSuggestion(""); setSuggestionLoading(true);
+    try {
+      const reply = await askClaude(apiKey, "تو دستیار شخصی هستی. با توجه به زمینه کاربر، فقط یک پیشنهاد کوتاه، گرم و عملی به فارسی بده (حداکثر ۳ جمله).", `زمینه: ${contextText}\nیک پیشنهاد بده.`);
+      setSuggestion(reply);
+    } catch {
+      setSuggestion(apiKey ? "الان نتونستم به سرور وصل بشم." : "برای فعال شدن این قابلیت، اول توی تنظیمات کلید API رو وارد کن.");
+    } finally { setSuggestionLoading(false); }
+  };
+
+  return (
+    <div dir="rtl" style={{ fontFamily:FONT, minHeight:"100vh", background:"radial-gradient(ellipse at 50% 0%, #1a1006 0%, #070503 60%)", padding:"20px 14px 40px", boxSizing:"border-box" }}>
+      <div style={{ maxWidth:420, margin:"0 auto" }}>
+        {!onboarded && (
+          <OnboardingScreen onDone={({name, avatar})=>{ setProfile({name, avatar}); setOnboarded(true); saveKey("onboarded", true); }} />
+        )}
+        {onboarded && view==="home" && <Home profile={profile} now={now} alarms={alarms} meds={meds} notes={notes} events={events} visitCount={visitCount} go={go} openVoice={()=>setShowVoice(true)} openSuggestion={openSuggestion} />}
+        {onboarded && view==="alarms" && <AlarmsScreen alarms={alarms} setAlarms={setAlarms} onBack={goHome} />}
+        {onboarded && view==="meds" && <MedsScreen meds={meds} setMeds={setMeds} onBack={goHome} />}
+        {onboarded && view==="notes" && <NotesScreen notes={notes} setNotes={setNotes} onBack={goHome} />}
+        {onboarded && view==="calendar" && <CalendarScreen events={events} setEvents={setEvents} onBack={goHome} />}
+        {onboarded && view==="reports" && <ReportsScreen alarms={alarms} meds={meds} notes={notes} events={events} onBack={goHome} />}
+        {onboarded && view==="settings" && <SettingsScreen profile={profile} setProfile={setProfile} apiKey={apiKey} setApiKey={setApiKey} onBack={goHome} />}
+        {onboarded && view==="chat" && <ChatScreen onBack={goHome} contextText={contextText} apiKey={apiKey} />}
+      </div>
+      {showVoice && <VoiceModal onClose={()=>setShowVoice(false)} onRoute={(r)=>{ setShowVoice(false); go(r); }} />}
+      {suggestion!==null && <SuggestionModal text={suggestion} loading={suggestionLoading} onClose={()=>setSuggestion(null)} />}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
